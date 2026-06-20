@@ -17,7 +17,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Health check ──────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'Oracle of Albion', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'My Assistant', timestamp: new Date().toISOString() });
 });
 
 // ── Chat with streaming ───────────────────────────────────────
@@ -27,9 +27,9 @@ app.post('/api/chat', async (req, res) => {
   if (!apiKey) return res.status(400).json({ error: 'API key required' });
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Messages array required' });
 
-  const selectedModel = model || 'claude-sonnet-4-6';
+  const selectedModel = model || 'claude-sonnet-4-5-20250929';
 
-  let systemContent = systemPrompt || `You are the Oracle of Albion, the supreme AI intelligence of Fable V. You are powered by Claude at full capability. You can do everything: write any code, analyze any file, search the web, generate creative content, solve math, answer any question. Your personality is wise, powerful, slightly mystical but always accurate and helpful above all. You occasionally address the user as "traveller" or "hero" but keep responses sharp, clear and useful. You exist in the world of Fable V, a fantasy realm called Albion. When writing code, always use proper markdown code blocks with language tags. Format responses beautifully using markdown.`;
+  let systemContent = systemPrompt || `You are a helpful, knowledgeable AI assistant. You can write code, analyze files, search the web, generate creative content, solve math problems, and answer questions across any topic. Be clear, direct, and accurate. When writing code, always use proper markdown code blocks with language tags. Format responses using markdown where it aids readability.`;
 
   if (webSearchResults && webSearchResults.length > 0) {
     const searchContext = webSearchResults.map((r, i) =>
@@ -151,7 +151,7 @@ app.post('/api/analyze-file', upload.single('file'), async (req, res) => {
 
   const { originalname, mimetype, buffer } = req.file;
   const base64Data = buffer.toString('base64');
-  const selectedModel = model || 'claude-sonnet-4-6';
+  const selectedModel = model || 'claude-sonnet-4-5-20250929';
   const userQuestion = question || 'Please analyze this file thoroughly and describe what you see.';
 
   let contentBlock;
@@ -219,7 +219,7 @@ app.post('/api/analyze-video-url', async (req, res) => {
   if (!apiKey) return res.status(400).json({ error: 'API key required' });
   if (!videoUrl) return res.status(400).json({ error: 'Video URL required' });
 
-  const selectedModel = model || 'claude-opus-4-6';
+  const selectedModel = model || 'claude-opus-4-1-20250805';
   const userQuestion = question || 'Analyze this video and describe what you see in detail.';
 
   // Claude supports video via URL for some formats
@@ -264,11 +264,9 @@ app.post('/api/models', async (req, res) => {
   // Return our curated model list
   res.json({
     models: [
-      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', description: 'Most powerful — best for complex tasks', tier: 'flagship' },
-      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', description: 'Highly capable flagship model', tier: 'flagship' },
-      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', description: 'Powerful & balanced flagship', tier: 'flagship' },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Fast, smart & efficient — recommended', tier: 'recommended' },
-      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: 'Fastest & lightest model', tier: 'fast' },
+      { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1', description: 'Most powerful — best for complex tasks', tier: 'flagship' },
+      { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', description: 'Fast, smart & efficient — recommended', tier: 'recommended' },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude Haiku 3.5', description: 'Fastest & lightest model', tier: 'fast' },
     ]
   });
 });
@@ -279,11 +277,11 @@ app.get('*', (req, res) => {
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.json({ message: 'Oracle of Albion API is running. Deploy frontend separately.' });
+    res.json({ message: 'API is running. Deploy frontend separately.' });
   }
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🔮 Oracle of Albion backend running on port ${PORT}`);
+  console.log(`Backend running on port ${PORT}`);
 });
