@@ -20,25 +20,65 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'My Assistant', timestamp: new Date().toISOString() });
 });
 
-// ── Chat with streaming ───────────────────────────────────────
+// ── Tools Claude can choose to use on its own ──────────────────
+const CLAUDE_TOOLS = [
+  {
+    name: 'generate_image',
+    description: 'Generate an image from a text description. Use this whenever the user asks to see, create, draw, generate, make, or imagine a picture/image/photo/artwork/illustration of something.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'A detailed visual description of the image to generate' }
+      },
+      required: ['prompt']
+    }
+  },
+  {
+    name: 'web_search',
+    description: 'Search the live web for current, recent, or real-time information. Use this for anything that may have changed recently, current events, prices, news, or facts you are not fully certain about.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query' }
+      },
+      required: ['query']
+    }
+  }
+];
+
+// ── Chat with streaming + automatic tool use (no manual mode toggles) ──
 app.post('/api/chat', async (req, res) => {
-  const { messages, apiKey, model, webSearchResults, systemPrompt } = req.body;
+  const { messages, apiKey, model, braveKey, systemPrompt } = req.body;
 
   if (!apiKey) return res.status(400).json({ error: 'API key required' });
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Messages array required' });
 
   const selectedModel = model || 'claude-sonnet-4-5-20250929';
 
-  let systemContent = systemPrompt || `You are a helpful, knowledgeable AI assistant. You can write code, analyze files, search the web, generate creative content, solve math problems, and answer questions across any topic. Be clear, direct, and accurate. When writing code, always use proper markdown code blocks with language tags. Format responses using markdown where it aids readability.`;
+  const systemContent = systemPrompt || `You are a helpful, knowledgeable AI assistant. You can write code, analyze files, search the web, generate images, solve math problems, and answer questions across any topic. Decide on your own, without being asked, whether a request needs an image generated or the web searched — use the tools available to you automatically when they would help answer better. Be clear, direct, and accurate. When writing code, always use proper markdown code blocks with language tags. Format responses using markdown where it aids readability.`;
 
-  if (webSearchResults && webSearchResults.length > 0) {
-    const searchContext = webSearchResults.map((r, i) =>
-      `[${i + 1}] ${r.title}\nURL: ${r.url}\n${r.snippet}`
-    ).join('\n\n');
-    systemContent += `\n\nLive web search results for context:\n${searchContext}\n\nUse these results to inform your answer. Cite sources when relevant.`;
-  }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
 
   try {
+    await runAgenticTurn({
+      apiKey, model: selectedModel, systemContent, messages: [...messages], braveKey, res,
+    });
+    res.end();
+  } catch (err) {
+    console.error('Chat error:', err);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// Runs one turn, letting Claude call tools as many times as it wants before giving a final text answer.
+async function runAgenticTurn({ apiKey, model, systemContent, messages, braveKey, res }) {
+  const MAX_TOOL_ROUNDS = 4;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -47,42 +87,93 @@ app.post('/api/chat', async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: selectedModel,
+        model,
         max_tokens: 8192,
-        stream: true,
         system: systemContent,
-        messages: messages,
+        messages,
+        tools: CLAUDE_TOOLS,
       }),
     });
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ error: { message: 'API error' } }));
-      return res.status(response.status).json({ error: err.error?.message || 'Anthropic API error' });
+      const errBody = await response.text();
+      let message = 'Anthropic API error';
+      try { message = JSON.parse(errBody).error?.message || message; } catch { message = errBody || message; }
+      throw new Error(message);
     }
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    const data = await response.json();
+    const textBlocks = data.content.filter(b => b.type === 'text');
+    const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
 
-    response.body.on('data', (chunk) => {
-      res.write(chunk);
-    });
+    // Stream any text Claude wrote this round
+    for (const block of textBlocks) {
+      res.write(`data: ${JSON.stringify({ type: 'text', text: block.text })}\n\n`);
+    }
 
-    response.body.on('end', () => {
-      res.end();
-    });
+    if (toolUseBlocks.length === 0) {
+      // No tools requested — final answer, we're done
+      return;
+    }
 
-    response.body.on('error', (err) => {
-      console.error('Stream error:', err);
-      res.end();
-    });
+    // Claude wants to use tool(s). Run them, then continue the conversation.
+    messages.push({ role: 'assistant', content: data.content });
 
-  } catch (err) {
-    console.error('Chat error:', err);
-    res.status(500).json({ error: err.message });
+    const toolResults = [];
+    for (const toolUse of toolUseBlocks) {
+      res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: toolUse.name, input: toolUse.input })}\n\n`);
+
+      if (toolUse.name === 'generate_image') {
+        try {
+          const imageData = await generateImage(toolUse.input.prompt);
+          res.write(`data: ${JSON.stringify({ type: 'image', image: imageData, prompt: toolUse.input.prompt })}\n\n`);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: 'Image generated successfully and shown to the user.',
+          });
+        } catch (e) {
+          toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: 'Image generation failed: ' + e.message, is_error: true });
+        }
+      } else if (toolUse.name === 'web_search') {
+        try {
+          const results = await braveSearch(toolUse.input.query, braveKey);
+          res.write(`data: ${JSON.stringify({ type: 'search_done', query: toolUse.input.query })}\n\n`);
+          const formatted = results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join('\n\n');
+          toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: formatted || 'No results found.' });
+        } catch (e) {
+          toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: 'Search failed: ' + e.message, is_error: true });
+        }
+      }
+    }
+
+    messages.push({ role: 'user', content: toolResults });
+    // loop continues — Claude sees tool results and responds again
   }
-});
+}
+
+async function generateImage(prompt) {
+  const encodedPrompt = encodeURIComponent(prompt);
+  const seed = Math.floor(Math.random() * 1000000);
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${seed}&nologo=true&enhance=true`;
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error('Pollinations error: ' + response.status);
+  const arrayBuffer = await response.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString('base64');
+  const mimeType = response.headers.get('content-type') || 'image/jpeg';
+  return `data:${mimeType};base64,${base64}`;
+}
+
+async function braveSearch(query, braveKey) {
+  if (!braveKey) throw new Error('No Brave Search key configured in Settings');
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&text_decorations=false`;
+  const response = await fetch(url, {
+    headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+  });
+  if (!response.ok) throw new Error('Brave Search error: ' + response.status);
+  const data = await response.json();
+  return (data.web?.results || []).slice(0, 5).map(r => ({ title: r.title, url: r.url, snippet: r.description || '' }));
+}
 
 // ── Web search via Brave ──────────────────────────────────────
 app.post('/api/search', async (req, res) => {
