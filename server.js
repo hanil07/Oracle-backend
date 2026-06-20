@@ -1,0 +1,289 @@
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const fetch = require('node-fetch');
+const path = require('path');
+const fs = require('fs');
+
+const app = express();
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit
+});
+
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Health check ──────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', service: 'Oracle of Albion', timestamp: new Date().toISOString() });
+});
+
+// ── Chat with streaming ───────────────────────────────────────
+app.post('/api/chat', async (req, res) => {
+  const { messages, apiKey, model, webSearchResults, systemPrompt } = req.body;
+
+  if (!apiKey) return res.status(400).json({ error: 'API key required' });
+  if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Messages array required' });
+
+  const selectedModel = model || 'claude-sonnet-4-6';
+
+  let systemContent = systemPrompt || `You are the Oracle of Albion, the supreme AI intelligence of Fable V. You are powered by Claude at full capability. You can do everything: write any code, analyze any file, search the web, generate creative content, solve math, answer any question. Your personality is wise, powerful, slightly mystical but always accurate and helpful above all. You occasionally address the user as "traveller" or "hero" but keep responses sharp, clear and useful. You exist in the world of Fable V, a fantasy realm called Albion. When writing code, always use proper markdown code blocks with language tags. Format responses beautifully using markdown.`;
+
+  if (webSearchResults && webSearchResults.length > 0) {
+    const searchContext = webSearchResults.map((r, i) =>
+      `[${i + 1}] ${r.title}\nURL: ${r.url}\n${r.snippet}`
+    ).join('\n\n');
+    systemContent += `\n\nLive web search results for context:\n${searchContext}\n\nUse these results to inform your answer. Cite sources when relevant.`;
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: 8192,
+        stream: true,
+        system: systemContent,
+        messages: messages,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: { message: 'API error' } }));
+      return res.status(response.status).json({ error: err.error?.message || 'Anthropic API error' });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    response.body.on('data', (chunk) => {
+      res.write(chunk);
+    });
+
+    response.body.on('end', () => {
+      res.end();
+    });
+
+    response.body.on('error', (err) => {
+      console.error('Stream error:', err);
+      res.end();
+    });
+
+  } catch (err) {
+    console.error('Chat error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Web search via Brave ──────────────────────────────────────
+app.post('/api/search', async (req, res) => {
+  const { query, braveKey } = req.body;
+  if (!braveKey) return res.status(400).json({ error: 'Brave API key required' });
+  if (!query) return res.status(400).json({ error: 'Query required' });
+
+  try {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&text_decorations=false`;
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': braveKey,
+      },
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(response.status).json({ error: 'Brave Search error: ' + err });
+    }
+
+    const data = await response.json();
+    const results = (data.web?.results || []).slice(0, 5).map(r => ({
+      title: r.title,
+      url: r.url,
+      snippet: r.description || '',
+    }));
+
+    res.json({ results });
+  } catch (err) {
+    console.error('Search error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Image generation via Pollinations ────────────────────────
+app.post('/api/imagine', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) return res.status(400).json({ error: 'Prompt required' });
+
+  try {
+    const encodedPrompt = encodeURIComponent(prompt);
+    const seed = Math.floor(Math.random() * 1000000);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${seed}&nologo=true&enhance=true`;
+
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error('Pollinations error: ' + response.status);
+
+    const arrayBuffer = await response.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+
+    res.json({ image: `data:${mimeType};base64,${base64}`, prompt });
+  } catch (err) {
+    console.error('Imagine error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── File analysis via Claude vision/document ─────────────────
+app.post('/api/analyze-file', upload.single('file'), async (req, res) => {
+  const { apiKey, question, model } = req.body;
+  if (!apiKey) return res.status(400).json({ error: 'API key required' });
+  if (!req.file) return res.status(400).json({ error: 'File required' });
+
+  const { originalname, mimetype, buffer } = req.file;
+  const base64Data = buffer.toString('base64');
+  const selectedModel = model || 'claude-sonnet-4-6';
+  const userQuestion = question || 'Please analyze this file thoroughly and describe what you see.';
+
+  let contentBlock;
+
+  if (mimetype.startsWith('image/')) {
+    // Image — use vision
+    contentBlock = [
+      { type: 'image', source: { type: 'base64', media_type: mimetype, data: base64Data } },
+      { type: 'text', text: userQuestion }
+    ];
+  } else if (mimetype === 'application/pdf') {
+    // PDF — use document type
+    contentBlock = [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Data } },
+      { type: 'text', text: userQuestion }
+    ];
+  } else if (mimetype.startsWith('video/')) {
+    // Video — extract frames or describe
+    return res.status(415).json({ error: 'Video analysis: Please use the video URL feature or convert to frames. Direct video upload not yet supported by Claude API.' });
+  } else {
+    // Text/code/CSV/JSON etc
+    let textContent;
+    try {
+      textContent = buffer.toString('utf-8');
+    } catch {
+      textContent = base64Data;
+    }
+    contentBlock = [
+      { type: 'text', text: `File: ${originalname}\n\nContent:\n\`\`\`\n${textContent}\n\`\`\`\n\n${userQuestion}` }
+    ];
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: contentBlock }],
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: { message: 'API error' } }));
+      return res.status(response.status).json({ error: err.error?.message || 'Claude API error' });
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(c => c.type === 'text')?.text || 'No analysis returned.';
+    res.json({ analysis: text, filename: originalname });
+  } catch (err) {
+    console.error('Analyze error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Video URL analysis ────────────────────────────────────────
+app.post('/api/analyze-video-url', async (req, res) => {
+  const { videoUrl, question, apiKey, model } = req.body;
+  if (!apiKey) return res.status(400).json({ error: 'API key required' });
+  if (!videoUrl) return res.status(400).json({ error: 'Video URL required' });
+
+  const selectedModel = model || 'claude-opus-4-6';
+  const userQuestion = question || 'Analyze this video and describe what you see in detail.';
+
+  // Claude supports video via URL for some formats
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: `Video URL: ${videoUrl}\n\n${userQuestion}\n\nPlease analyze the content at this URL. If you cannot directly view the video, analyze based on any metadata, title, or context available, and let the user know.` }
+          ]
+        }],
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: { message: 'API error' } }));
+      return res.status(response.status).json({ error: err.error?.message || 'Claude API error' });
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(c => c.type === 'text')?.text || 'No analysis returned.';
+    res.json({ analysis: text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── List available models ─────────────────────────────────────
+app.post('/api/models', async (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey) return res.status(400).json({ error: 'API key required' });
+
+  // Return our curated model list
+  res.json({
+    models: [
+      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', description: 'Most powerful — best for complex tasks', tier: 'flagship' },
+      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', description: 'Highly capable flagship model', tier: 'flagship' },
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', description: 'Powerful & balanced flagship', tier: 'flagship' },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Fast, smart & efficient — recommended', tier: 'recommended' },
+      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: 'Fastest & lightest model', tier: 'fast' },
+    ]
+  });
+});
+
+// ── Serve frontend ────────────────────────────────────────────
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.json({ message: 'Oracle of Albion API is running. Deploy frontend separately.' });
+  }
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🔮 Oracle of Albion backend running on port ${PORT}`);
+});
