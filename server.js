@@ -416,9 +416,25 @@ app.post('/api/chat', async (req, res) => {
   // Mutable wrapper — googleApiCall() updates .accessToken in place on refresh
   const googleTokens = { accessToken: googleAccessToken || null, refreshToken: googleRefreshToken || null };
 
+  // Mark everything before the newest message as cacheable. On a long
+  // back-and-forth (like building a landing page over several turns), this
+  // stops every message from re-billing the entire prior conversation.
+  const messagesCopy = [...messages];
+  if (messagesCopy.length >= 2) {
+    const priorTurnEnd = messagesCopy[messagesCopy.length - 2];
+    if (typeof priorTurnEnd.content === 'string') {
+      priorTurnEnd.content = [{ type: 'text', text: priorTurnEnd.content, cache_control: { type: 'ephemeral' } }];
+    } else if (Array.isArray(priorTurnEnd.content) && priorTurnEnd.content.length > 0) {
+      priorTurnEnd.content = [...priorTurnEnd.content];
+      const lastBlock = { ...priorTurnEnd.content[priorTurnEnd.content.length - 1] };
+      lastBlock.cache_control = { type: 'ephemeral' };
+      priorTurnEnd.content[priorTurnEnd.content.length - 1] = lastBlock;
+    }
+  }
+
   try {
     await runAgenticTurn({
-      apiKey, model: selectedModel, systemContent, messages: [...messages], res,
+      apiKey, model: selectedModel, systemContent, messages: messagesCopy, res,
       extendedThinking: !!extendedThinking, googleTokens,
     });
     res.end();
@@ -433,13 +449,24 @@ app.post('/api/chat', async (req, res) => {
 async function runAgenticTurn({ apiKey, model, systemContent, messages, res, extendedThinking, googleTokens }) {
   const MAX_TOOL_ROUNDS = 4;
 
+  // The system prompt and tool definitions are byte-identical on every
+  // single request — every round of every turn, for every user. Marking
+  // them as cacheable means Anthropic charges full price once and ~90%
+  // less on every repeat within the cache window (~5 min), instead of
+  // re-billing the same ~1-2k tokens of system+tools on every message.
+  const cachedTools = [...CLAUDE_TOOLS, ...SERVER_TOOLS];
+  cachedTools[cachedTools.length - 1] = {
+    ...cachedTools[cachedTools.length - 1],
+    cache_control: { type: 'ephemeral' },
+  };
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const requestBody = {
       model,
       max_tokens: extendedThinking ? 16000 : 12000,
-      system: systemContent,
+      system: [{ type: 'text', text: systemContent, cache_control: { type: 'ephemeral' } }],
       messages,
-      tools: [...CLAUDE_TOOLS, ...SERVER_TOOLS],
+      tools: cachedTools,
       container: SKILLS_CONTAINER,
     };
     if (extendedThinking) {
