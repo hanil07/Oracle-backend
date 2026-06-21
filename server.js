@@ -365,6 +365,25 @@ const SKILLS_CONTAINER = {
   ],
 };
 
+// Current per-million-token pricing (USD). Used to show real cost per
+// message instead of leaving usage a mystery. Update if Anthropic changes
+// pricing — check https://platform.claude.com/docs/en/about-claude/pricing
+const MODEL_PRICING = {
+  'claude-opus-4-7': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  'claude-haiku-4-5-20251001': { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+};
+
+function estimateCostUsd(model, usage) {
+  const p = MODEL_PRICING[model] || MODEL_PRICING['claude-sonnet-4-6'];
+  return (
+    ((usage.input_tokens || 0) / 1e6) * p.input +
+    ((usage.output_tokens || 0) / 1e6) * p.output +
+    ((usage.cache_creation_input_tokens || 0) / 1e6) * p.cacheWrite +
+    ((usage.cache_read_input_tokens || 0) / 1e6) * p.cacheRead
+  );
+}
+
 // ── Files API — download a file a code_execution run created ──
 async function fetchGeneratedFile(fileId, apiKey) {
   const metaResp = await fetch(`https://api.anthropic.com/v1/files/${fileId}`, {
@@ -445,9 +464,105 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Calls the Anthropic API with stream:true and parses the SSE response as it
+// arrives, forwarding text/thinking word-by-word to the frontend in real time
+// via onTextDelta/onThinkingDelta — instead of waiting for the entire
+// response to finish generating server-side before sending anything back.
+// Returns the fully assembled content blocks (same shape the non-streaming
+// API would have returned) once the stream ends, so the rest of the tool
+// loop can keep working with it unchanged.
+async function streamAnthropicMessage(requestBody, apiKey, res, onTextDelta, onThinkingDelta) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': BETA_HEADERS,
+    },
+    body: JSON.stringify({ ...requestBody, stream: true }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    let message = 'Anthropic API error';
+    try { message = JSON.parse(errBody).error?.message || message; } catch { message = errBody || message; }
+    throw new Error(message);
+  }
+
+  const blocks = [];
+  let stopReason = null;
+  let buffer = '';
+  const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+
+  for await (const chunk of response.body) {
+    buffer += chunk.toString('utf8');
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // keep any partial line for the next chunk
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (!raw) continue;
+
+      let evt;
+      try { evt = JSON.parse(raw); } catch { continue; }
+
+      if (evt.type === 'message_start' && evt.message?.usage) {
+        usage.input_tokens = evt.message.usage.input_tokens || 0;
+        usage.cache_creation_input_tokens = evt.message.usage.cache_creation_input_tokens || 0;
+        usage.cache_read_input_tokens = evt.message.usage.cache_read_input_tokens || 0;
+      } else if (evt.type === 'message_delta' && evt.usage) {
+        usage.output_tokens = evt.usage.output_tokens || usage.output_tokens;
+      }
+
+      if (evt.type === 'content_block_start') {
+        const block = { ...evt.content_block };
+        if (block.type === 'tool_use' || block.type === 'server_tool_use') block._partialJson = '';
+        blocks[evt.index] = block;
+      } else if (evt.type === 'content_block_delta') {
+        const block = blocks[evt.index];
+        if (!block) continue;
+        if (evt.delta.type === 'text_delta') {
+          block.text = (block.text || '') + evt.delta.text;
+          if (onTextDelta) onTextDelta(evt.delta.text);
+        } else if (evt.delta.type === 'thinking_delta') {
+          block.thinking = (block.thinking || '') + evt.delta.thinking;
+          if (onThinkingDelta) onThinkingDelta(evt.delta.thinking);
+        } else if (evt.delta.type === 'input_json_delta') {
+          block._partialJson = (block._partialJson || '') + (evt.delta.partial_json || '');
+        } else if (evt.delta.type === 'citations_delta') {
+          block.citations = block.citations || [];
+          block.citations.push(evt.delta.citation);
+        }
+      } else if (evt.type === 'content_block_stop') {
+        const block = blocks[evt.index];
+        if (block && block._partialJson !== undefined) {
+          try { block.input = JSON.parse(block._partialJson || '{}'); } catch { block.input = {}; }
+          delete block._partialJson;
+        }
+      } else if (evt.type === 'message_delta') {
+        if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
+      } else if (evt.type === 'error') {
+        throw new Error(evt.error?.message || 'Stream error');
+      }
+    }
+  }
+
+  return { content: blocks.filter(Boolean), stop_reason: stopReason, usage };
+}
+
 // Runs one turn, letting Claude call tools as many times as it wants before giving a final text answer.
 async function runAgenticTurn({ apiKey, model, systemContent, messages, res, extendedThinking, googleTokens }) {
   const MAX_TOOL_ROUNDS = 4;
+  const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const sendUsage = () => {
+    res.write(`data: ${JSON.stringify({
+      type: 'usage',
+      usage: totalUsage,
+      estimatedCostUsd: estimateCostUsd(model, totalUsage),
+    })}\n\n`);
+  };
 
   // The system prompt and tool definitions are byte-identical on every
   // single request — every round of every turn, for every user. Marking
@@ -473,30 +588,22 @@ async function runAgenticTurn({ apiKey, model, systemContent, messages, res, ext
       requestBody.thinking = { type: 'enabled', budget_tokens: 6000 };
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        // Required to enable native web_fetch and code_execution server tools
-        'anthropic-beta': BETA_HEADERS,
-      },
-      body: JSON.stringify(requestBody),
-    });
+    const data = await streamAnthropicMessage(
+      requestBody,
+      apiKey,
+      res,
+      (textDelta) => res.write(`data: ${JSON.stringify({ type: 'text', text: textDelta })}\n\n`),
+      (thinkingDelta) => res.write(`data: ${JSON.stringify({ type: 'thinking', text: thinkingDelta })}\n\n`)
+    );
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      let message = 'Anthropic API error';
-      try { message = JSON.parse(errBody).error?.message || message; } catch { message = errBody || message; }
-      throw new Error(message);
-    }
-
-    const data = await response.json();
-    const thinkingBlocks = data.content.filter(b => b.type === 'thinking');
     const textBlocks = data.content.filter(b => b.type === 'text');
     const toolUseBlocks = data.content.filter(b => b.type === 'tool_use'); // client tools only
     const serverToolUseBlocks = data.content.filter(b => b.type === 'server_tool_use'); // web_search/web_fetch — already resolved
+
+    totalUsage.input_tokens += data.usage.input_tokens || 0;
+    totalUsage.output_tokens += data.usage.output_tokens || 0;
+    totalUsage.cache_creation_input_tokens += data.usage.cache_creation_input_tokens || 0;
+    totalUsage.cache_read_input_tokens += data.usage.cache_read_input_tokens || 0;
 
     // Let the frontend show "searching"/"reading link"/"running code" status
     // for the native server tools — Anthropic already ran them server-side
@@ -532,14 +639,6 @@ async function runAgenticTurn({ apiKey, model, systemContent, messages, res, ext
       }
     }
 
-    // Stream thinking first (if any), then text Claude wrote this round
-    for (const block of thinkingBlocks) {
-      res.write(`data: ${JSON.stringify({ type: 'thinking', text: block.thinking })}\n\n`);
-    }
-    for (const block of textBlocks) {
-      res.write(`data: ${JSON.stringify({ type: 'text', text: block.text })}\n\n`);
-    }
-
     // Surface citations (from web_search / web_fetch) as a simple source list
     const citationSources = [];
     for (const block of textBlocks) {
@@ -563,6 +662,7 @@ async function runAgenticTurn({ apiKey, model, systemContent, messages, res, ext
       }
       // No client tools requested — final answer, we're done
       // (any web_search/web_fetch/code_execution use already happened server-side above)
+      sendUsage();
       return;
     }
 
@@ -647,6 +747,8 @@ async function runAgenticTurn({ apiKey, model, systemContent, messages, res, ext
     messages.push({ role: 'user', content: toolResults });
     // loop continues — Claude sees tool results and responds again
   }
+
+  sendUsage(); // fallback — only reached if MAX_TOOL_ROUNDS was exhausted
 }
 
 async function generateImage(prompt) {
