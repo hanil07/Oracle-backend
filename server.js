@@ -529,6 +529,13 @@ async function streamAnthropicMessage(requestBody, apiKey, res, onTextDelta, onT
         } else if (evt.delta.type === 'thinking_delta') {
           block.thinking = (block.thinking || '') + evt.delta.thinking;
           if (onThinkingDelta) onThinkingDelta(evt.delta.thinking);
+        } else if (evt.delta.type === 'signature_delta') {
+          // Thinking blocks carry a signature Anthropic uses to verify they
+          // weren't tampered with. It streams in separately from the thinking
+          // text itself, right before the block closes — has to be captured
+          // and preserved intact, or the API rejects the block on the next
+          // round with "Invalid signature in thinking block".
+          block.signature = (block.signature || '') + (evt.delta.signature || '');
         } else if (evt.delta.type === 'input_json_delta') {
           block._partialJson = (block._partialJson || '') + (evt.delta.partial_json || '');
         } else if (evt.delta.type === 'citations_delta') {
