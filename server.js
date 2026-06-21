@@ -380,7 +380,8 @@ function estimateCostUsd(model, usage) {
     ((usage.input_tokens || 0) / 1e6) * p.input +
     ((usage.output_tokens || 0) / 1e6) * p.output +
     ((usage.cache_creation_input_tokens || 0) / 1e6) * p.cacheWrite +
-    ((usage.cache_read_input_tokens || 0) / 1e6) * p.cacheRead
+    ((usage.cache_read_input_tokens || 0) / 1e6) * p.cacheRead +
+    (usage.web_search_count || 0) * 0.01 // billed per query, separately from tokens — was missing entirely before
   );
 }
 
@@ -495,6 +496,18 @@ async function streamAnthropicMessage(requestBody, apiKey, res, onTextDelta, onT
   let buffer = '';
   const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 
+  // While we're waiting on Anthropic (e.g. a slow code_execution run, or a
+  // big thinking budget with a quiet stretch before output starts), our own
+  // connection to the frontend would otherwise go silent too — and the
+  // frontend has its own stall-timeout that would wrongly treat a perfectly
+  // healthy slow request as dead, forcing a separately-billed retry. A
+  // periodic harmless ping keeps that timer reset for as long as we're
+  // genuinely still working.
+  const keepAlive = setInterval(() => {
+    try { res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`); } catch {}
+  }, 15000);
+
+  try {
   for await (const chunk of response.body) {
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
@@ -555,6 +568,9 @@ async function streamAnthropicMessage(requestBody, apiKey, res, onTextDelta, onT
       }
     }
   }
+  } finally {
+    clearInterval(keepAlive);
+  }
 
   return { content: blocks.filter(Boolean), stop_reason: stopReason, usage };
 }
@@ -562,7 +578,7 @@ async function streamAnthropicMessage(requestBody, apiKey, res, onTextDelta, onT
 // Runs one turn, letting Claude call tools as many times as it wants before giving a final text answer.
 async function runAgenticTurn({ apiKey, model, systemContent, messages, res, extendedThinking, googleTokens }) {
   const MAX_TOOL_ROUNDS = 4;
-  const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_count: 0 };
   const sendUsage = () => {
     res.write(`data: ${JSON.stringify({
       type: 'usage',
@@ -617,6 +633,7 @@ async function runAgenticTurn({ apiKey, model, systemContent, messages, res, ext
     // before this response came back, so there's nothing for us to execute.
     for (const block of serverToolUseBlocks) {
       if (block.name === 'web_search') {
+        totalUsage.web_search_count += 1;
         res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: 'web_search', input: { query: block.input.query } })}\n\n`);
         res.write(`data: ${JSON.stringify({ type: 'search_done', query: block.input.query })}\n\n`);
       } else if (block.name === 'web_fetch') {
