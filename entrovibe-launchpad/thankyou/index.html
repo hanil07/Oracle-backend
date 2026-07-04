@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Payment Successful — Entrovibe Launchpad</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="manifest" href="/manifest.json">
+<link rel="stylesheet" href="/style.css">
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init','1311806951161601');fbq('track','PageView');fbq('track','Purchase',{currency:'INR',value:299});
+</script>
+<style>
+  .ty-wrap{max-width:560px;margin:0 auto;padding:clamp(6.5rem,14vw,8.5rem) 1.5rem 4rem;text-align:center}
+  .ty-status{font-size:0.78rem;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:var(--success);margin-bottom:0.75rem}
+  .ty-sub{color:var(--muted);margin-bottom:2rem}
+  .ty-sub b{color:var(--white)}
+  .ty-inside{font-size:0.82rem;color:var(--muted-2);border:1px solid var(--border);border-radius:100px;padding:0.7rem 1.2rem;display:inline-block;margin-bottom:2rem}
+  .ty-fallback{font-size:0.8rem;color:var(--muted-2);margin-top:0.9rem;word-break:break-all}
+  .ty-fallback a{color:var(--gold-light)}
+  .ty-steps{margin-top:2.5rem;display:flex;flex-direction:column;gap:1rem;text-align:left}
+  .ty-step{display:flex;gap:1rem;align-items:flex-start;padding:1.1rem 1.3rem;border-radius:var(--radius-sm)}
+  .ty-step-n{flex-shrink:0;width:32px;height:32px;border-radius:9px;background:linear-gradient(145deg,var(--gold-light),var(--gold-dark));color:#14110a;font-weight:700;font-size:0.85rem;display:grid;place-items:center}
+  .ty-step h3{font-size:0.98rem;margin-bottom:0.25rem}
+  .ty-step p{font-size:0.85rem;color:var(--muted)}
+  .ty-step p b{color:var(--white)}
+  .ty-receipt{display:inline-flex;align-items:center;gap:0.5rem;margin-top:2rem;font-size:0.8rem;color:var(--success);background:rgba(111,191,139,0.08);border:1px solid rgba(111,191,139,0.3);border-radius:100px;padding:0.6rem 1.2rem}
+</style>
+</head>
+<body>
+
+<div class="scroll-progress" aria-hidden="true" style="display:none"></div>
+
+<main id="main-content" class="hero" style="min-height:100dvh;padding-bottom:2rem;">
+  <div class="hero-bg" aria-hidden="true">
+    <div class="hero-glow hero-glow-1"></div>
+    <div class="hero-glow hero-glow-2"></div>
+  </div>
+
+  <div class="container ty-wrap">
+    <div class="modal-icon" style="margin-inline:auto;">✓</div>
+    <p class="ty-status">Payment successful</p>
+    <h1 class="hero-title" style="max-width:none; font-size:clamp(1.6rem,4.5vw,2.2rem);">Welcome to <span class="hero-title-accent" style="display:inline; font-style:normal;">Entrovibe Launchpad</span> 🚀</h1>
+    <p class="ty-sub">Your <b>₹299 payment is confirmed</b>. Join the Discord community below — everything is waiting for you inside.</p>
+    <div class="ty-inside">INSIDE: 1M+ PRODUCTS · 15K+ REELS · ROADMAP · MENTORSHIP · LIVE SESSIONS</div>
+
+    <div>
+      <a class="btn btn-gold btn-lg btn-block ripple" href="https://discord.com/invite/c7VWchQF7R?2026"><span>Join Discord Community →</span></a>
+      <p class="ty-fallback">Button not working? <a href="https://discord.com/invite/c7VWchQF7R?2026">discord.com/invite/c7VWchQF7R</a></p>
+    </div>
+
+    <div class="ty-steps">
+      <div class="ty-step glass"><div class="ty-step-n">1</div><div><h3>Click the button above</h3><p>The Discord invite opens instantly — takes 2 minutes if you don't have an account.</p></div></div>
+      <div class="ty-step glass"><div class="ty-step-n">2</div><div><h3>Join the server</h3><p>Head to <b>#start-here</b> — your full roadmap and first steps are pinned there.</p></div></div>
+      <div class="ty-step glass"><div class="ty-step-n">3</div><div><h3>Start selling digital products</h3><p>Pick a product, post content, collect payments. Everything is done for you.</p></div></div>
+    </div>
+
+    <div class="ty-receipt">✅ ₹299 payment confirmed</div>
+  </div>
+</main>
+
+<footer class="site-footer" style="padding-top:2rem;">
+  <div class="container footer-bottom">
+    <p>© <span id="year"></span> Entrovibe Launchpad. All rights reserved.</p>
+  </div>
+</footer>
+<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>

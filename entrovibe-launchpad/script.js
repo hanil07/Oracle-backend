@@ -9,9 +9,8 @@
      CONFIG — edit these values for your own deployment
   ----------------------------------------------------------------------- */
   var CONFIG = {
-    // Replace with your real payment link (Razorpay Payment Link, Instamojo,
-    // Gumroad, Stripe Payment Link, etc). Leave empty to show the demo modal.
-    BUY_URL: "",
+    // Real checkout link (Superprofile). Leave empty to show the demo modal instead.
+    BUY_URL: "https://superprofile.bio/vp/get-launchpad?checkout=true",
     PRICE_LABEL: "₹299",
     // Countdown length in hours for the evergreen scarcity timer.
     COUNTDOWN_HOURS: 12,
@@ -314,6 +313,9 @@
 
       btn.addEventListener("click", function (e) {
         e.preventDefault();
+        if (typeof window.fbq === "function") {
+          try { window.fbq("track", "InitiateCheckout"); } catch (err) {}
+        }
         if (CONFIG.BUY_URL) {
           showToast("Redirecting to secure checkout…");
           window.open(CONFIG.BUY_URL, "_blank", "noopener");

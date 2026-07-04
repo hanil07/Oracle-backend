@@ -466,6 +466,14 @@ h3 { font-size: clamp(1.15rem, 1.6vw, 1.4rem); }
 .testi-note { margin-top: 1.75rem; text-align: center; color: var(--muted-2); font-size: 0.82rem; }
 @media (max-width: 900px) { .testi-grid { grid-template-columns: 1fr; } }
 
+/* ---- Real proof gallery ---- */
+.proof-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; align-items: start; }
+.proof-card { padding: 0.6rem; border-radius: var(--radius); overflow: hidden; }
+.proof-card img { border-radius: calc(var(--radius) - 8px); width: 100%; height: auto; }
+.proof-card figcaption { padding: 0.85rem 0.5rem 0.4rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+@media (max-width: 980px) { .proof-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .proof-grid { grid-template-columns: 1fr; max-width: 380px; margin-inline: auto; } }
+
 /* ==========================================================================
    Before / After
    ========================================================================== */
