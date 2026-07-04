@@ -1,0 +1,31 @@
+{
+  "name": "Entrovibe Launchpad",
+  "short_name": "Entrovibe",
+  "description": "The complete digital business vault — 1,000,000+ resellable digital products, 15,000+ viral reels, premium AI tools and lifetime updates.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#070604",
+  "theme_color": "#070604",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
